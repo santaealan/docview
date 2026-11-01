@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# docview [目录]                               在当前窗格打开开始页，从当前目录（或指定目录）选择文件
+# docview <飞书文档URL | file.md | file.html>   在当前窗格直接打开文档
+# docview --refresh                            让本 workspace 里运行中的 docview 立即重新加载（供 agent 调用）
+set -euo pipefail
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+
+die() { echo "docview: $*" >&2; exit 1; }
+usage() { sed -n '2,4p' "$0" | sed 's/^# //'; }
+
+# Each running viewer owns one target file, named per workspace and pane, so that
+# `--refresh` from another pane (e.g. the agent's) can reach every viewer in the workspace.
+ws="${HERDR_WORKSPACE_ID:-local}"
+state="$HOME/.local/state/docview"
+mkdir -p "$state"
+
+case "${1:-}" in
+-h | --help)
+  usage
+  ;;
+--refresh)
+  shopt -s nullglob
+  files=("$state/$ws".*.target)
+  [ ${#files[@]} -gt 0 ] || die "当前 workspace 没有运行中的 docview"
+  touch "${files[@]}"
+  echo "refresh requested (${#files[@]} viewer)"
+  ;;
+*)
+  t="${1:-$PWD}"
+  case "$t" in
+  http://* | https://*) ;;
+  *)
+    if [ -d "$t" ]; then
+      t="$(cd "$t" && pwd)"
+    else
+      [ -f "$t" ] || die "文件不存在: $t"
+      case "${t##*.}" in
+      md | markdown | html | htm) ;;
+      *) die "只支持 .md/.markdown/.html/.htm 文件: $t" ;;
+      esac
+      t="$(cd "$(dirname "$t")" && pwd)/$(basename "$t")"
+    fi
+    ;;
+  esac
+  target_file="$state/$ws.${HERDR_PANE_ID:-pid$$}.target"
+  printf '%s\n' "$t" >"$target_file"
+  export DOCVIEW_TARGET_FILE="$target_file"
+  # uv installs and caches the Python deps declared at the top of docview.py.
+  exec uv run --quiet --script "$(dirname "$(realpath "$0")")/../docview.py"
+  ;;
+esac
