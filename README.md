@@ -116,7 +116,7 @@ docview 在当前终端里直接运行，按 `q` 退出。
 ## 工作原理
 
 ```
-bin/docview    入口脚本：解析参数，把要打开的目标写入状态文件，再用 uv 启动 docview.py
+bin/docview    入口脚本：解析参数，把要打开的目标写入状态文件，用 uv 准备好依赖环境后，直接用其中的 Python 启动 docview.py（uv 不常驻）
 docview.py     Textual 界面：开始页、渲染、定时检查更新
 ```
 
