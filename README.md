@@ -118,10 +118,12 @@ docview 在当前终端里直接运行，按 `q` 退出。
 ```
 bin/docview    入口脚本：解析参数，把要打开的目标写入状态文件，用 uv 准备好依赖环境后，直接用其中的 Python 启动 docview.py（uv 不常驻）
 docview.py     Textual 界面：开始页、渲染、定时检查更新
+docview.py.lock  依赖版本锁定文件
 ```
 
 - 每个运行中的 docview 在 `~/.local/state/docview/` 下有一个状态文件，里面写着当前打开的目标。`docview --refresh` 只是更新这些文件的修改时间，docview 发现后就会重新加载。docview 退出时会删除自己的状态文件。
 - 飞书文档通过 `lark-cli docs +fetch --doc-format markdown` 获取。返回的 Markdown 里夹带的 HTML 表格由 docview 自己转成终端表格，其余部分交给 Rich 渲染。
+- Python 依赖版本锁定在 `docview.py.lock` 里，每次都安装完全相同的版本，不会因为依赖库升级而突然无法运行。要升级依赖或修改 `docview.py` 开头声明的依赖时，运行 `uv lock --script docview.py --upgrade` 更新锁文件，测试没问题后再提交。
 
 ## 许可证
 

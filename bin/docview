@@ -48,7 +48,8 @@ case "${1:-}" in
   # uv installs and caches the Python deps declared at the top of docview.py. Exec that
   # env's python directly instead of `uv run`, so uv doesn't stay resident (~20 MB each).
   script="$(dirname "$(realpath "$0")")/../docview.py"
-  uv sync --quiet --script "$script"
+  # --locked: install exactly the versions in docview.py.lock; fail instead of upgrading.
+  uv sync --quiet --locked --script "$script"
   exec "$(uv python find --script "$script")" "$script"
   ;;
 esac
