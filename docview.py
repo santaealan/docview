@@ -16,10 +16,14 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 from markdownify import MarkdownConverter
 from rich.console import Group
+from rich.measure import Measurement
+from rich.segment import Segment
+from rich.style import Style
 from rich.markdown import Markdown
 from rich.table import Table
 from rich.text import Text
@@ -30,6 +34,8 @@ from textual.widgets import ContentSwitcher, DirectoryTree, Footer, Input, Stati
 
 FEISHU_POLL_SECONDS = 20
 LOCAL_SUFFIXES = (".md", ".markdown", ".html", ".htm")
+# Feishu/Lark docs that docview can open itself (others go to the browser).
+FEISHU_DOC_RE = re.compile(r"^https?://[^/]*(feishu\.cn|feishu\.net|larksuite\.com|larkoffice\.com)/(docx|docs|wiki)/\w+")
 
 
 # ---------- loading ----------
@@ -55,7 +61,9 @@ def fetch_feishu(url: str) -> tuple[str, str, str]:
     doc = data["data"]["document"]
     content = doc.get("content", "")
     m = re.search(r"<title>(.*?)</title>", content, re.S)
-    title = m.group(1).strip() if m else url
+    # Some docs have no <title>; fall back to a leading "# heading", then the URL.
+    h1 = re.match(r"\s*#\s+(.+)", content)
+    title = m.group(1).strip() if m else h1.group(1).strip() if h1 else url
     content = re.sub(r"<title>.*?</title>", "", content, count=1, flags=re.S)
     return title, str(doc.get("revision_id", "")), content
 
@@ -91,9 +99,24 @@ def _attr(tag: str, name: str) -> str:
     return m.group(1) if m else ""
 
 
-def inline_html_to_md(s: str) -> str:
+def cite_url(file_type: str, doc_id: str, base: str) -> str:
+    """URL of a Feishu doc cited by <cite doc-id=...>, on the same host as the current doc."""
+    host = urlparse(base).netloc if is_url(base) else ""
+    if not (host and doc_id):
+        return ""
+    path = {"sheet": "sheets", "bitable": "base"}.get(file_type, file_type or "docx")
+    return f"https://{host}/{path}/{doc_id}"
+
+
+def _cite_md(tag: str, base: str) -> str:
+    label = f"文档: {_attr(tag, 'title')}"
+    url = cite_url(_attr(tag, "file-type"), _attr(tag, "doc-id"), base)
+    return f"[{label}]({url})" if url else f"[{label}]"
+
+
+def inline_html_to_md(s: str, base: str = "") -> str:
     """Turn the inline HTML that Feishu leaves inside markdown into markdown/plain text."""
-    s = re.sub(r"<cite\b[^>]*>.*?</cite>", lambda m: f"[文档: {_attr(m.group(0), 'title')}]", s, flags=re.S)
+    s = re.sub(r"<cite\b[^>]*>.*?</cite>", lambda m: _cite_md(m.group(0), base), s, flags=re.S)
     s = re.sub(r"<figure\b.*?</figure>",
                lambda m: f"[附件: {_attr(m.group(0), 'name') or _attr(m.group(0), 'alt') or '图片'}]", s, flags=re.S)
     s = re.sub(r"<img\b[^>]*>", lambda m: f"[图片: {_attr(m.group(0), 'alt') or _attr(m.group(0), 'src')}]", s)
@@ -106,11 +129,30 @@ def inline_html_to_md(s: str) -> str:
     return re.sub(r"</?[a-zA-Z][\w-]*(\s[^<>]*)?/?>", "", s)
 
 
-def cell_text(td) -> str:
+# Private-use characters that mark a link inside cell text until it becomes a rich Text.
+_LINK_START, _LINK_MID, _LINK_END = "\ue000", "\ue001", "\ue002"
+LINK_STYLE = Style(color="bright_blue", underline=True)
+
+
+def _linked_text(s: str) -> Text:
+    out, pos = Text(), 0
+    for m in re.finditer(f"{_LINK_START}(.*?){_LINK_MID}(.*?){_LINK_END}", s, flags=re.S):
+        out.append(s[pos:m.start()])
+        out.append(m.group(2), LINK_STYLE + Style(link=m.group(1)))
+        pos = m.end()
+    out.append(s[pos:])
+    return out
+
+
+def cell_text(td, base: str = "") -> Text:
     for br in td.find_all("br"):
         br.replace_with("\n")
     for c in td.find_all("cite"):
-        c.replace_with(f"[文档: {c.get('title', '')}]")
+        label = f"[文档: {c.get('title', '')}]"
+        url = cite_url(c.get("file-type", ""), c.get("doc-id", ""), base)
+        c.replace_with(f"{_LINK_START}{url}{_LINK_MID}{label}{_LINK_END}" if url else label)
+    for a in td.find_all("a", href=True):
+        a.replace_with(f"{_LINK_START}{a['href']}{_LINK_MID}{a.get_text()}{_LINK_END}")
     for f in td.find_all(["figure", "img"]):
         src = f if f.name == "img" else (f.find("source") or f.find("img") or f)
         f.replace_with(f"[附件: {src.get('name') or src.get('alt') or '图片'}]")
@@ -121,10 +163,10 @@ def cell_text(td) -> str:
     for p in td.find_all(["p", "div"]):
         p.append("\n")
     lines = [ln.strip() for ln in td.get_text().splitlines()]
-    return "\n".join(ln for ln in lines if ln)
+    return _linked_text("\n".join(ln for ln in lines if ln))
 
 
-def table_renderable(html: str) -> Table:
+def table_renderable(html: str, base: str = "") -> Table:
     table = BeautifulSoup(html, "html.parser").find("table")
     trs = [tr for tr in table.find_all("tr") if tr.find_parent("table") is table]
     rows, has_header = [], False
@@ -141,7 +183,7 @@ def table_renderable(html: str) -> Table:
                 col += 1
             rs = int(td.get("rowspan") or 1)
             cs = int(td.get("colspan") or 1)
-            row.append(cell_text(td))
+            row.append(cell_text(td, base))
             row.extend([""] * (cs - 1))
             if rs > 1:
                 for c in range(col, col + cs):
@@ -163,16 +205,35 @@ def table_renderable(html: str) -> Table:
     return t
 
 
-def render(content: str) -> Group:
+class Clickable:
+    """Wrap a renderable so clicking any hyperlink in it runs `app.open_link(url)` in Textual."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def __rich_console__(self, console, options):
+        for seg in console.render(self.inner, options):
+            if seg.style is not None and seg.style.link:
+                click = Style.from_meta({"@click": f"app.open_link({seg.style.link!r})"})
+                yield Segment(seg.text, seg.style + click, seg.control)
+            else:
+                yield seg
+
+    def __rich_measure__(self, console, options):
+        return Measurement.get(console, options, self.inner)
+
+
+def render(content: str, base: str = "") -> Clickable:
+    """Render document content; `base` is the doc's own URL, used to link cited Feishu docs."""
     parts = re.split(r"(<table\b.*?</table>)", content, flags=re.S | re.I)
     out = []
     for i, part in enumerate(parts):
         if i % 2:
-            out.append(table_renderable(part))
+            out.append(table_renderable(part, base))
             out.append(Text(""))
         elif part.strip():
-            out.append(Markdown(inline_html_to_md(part), hyperlinks=True))
-    return Group(*out)
+            out.append(Markdown(inline_html_to_md(part, base), hyperlinks=True))
+    return Clickable(Group(*out))
 
 
 # ---------- app ----------
@@ -201,6 +262,7 @@ class DocView(App):
     BINDINGS = [
         ("q", "quit", "退出"),
         ("o", "picker", "打开其他"),
+        ("backspace", "back", "返回"),
         ("u", "parent", "上级目录"),
         ("r", "reload", "刷新"),
         ("j", "scroll(1)", "下"),
@@ -222,6 +284,7 @@ class DocView(App):
         self.file_mtime = None
         self.next_poll = 0.0
         self.loading = False
+        self.history: list[str] = []  # targets left by following links, for `back`
 
     def compose(self) -> ComposeResult:
         yield Static("加载中…", id="bar")
@@ -257,6 +320,8 @@ class DocView(App):
     def check_action(self, action: str, parameters) -> bool | None:
         picker_only = {"parent"}
         doc_only = {"picker", "reload", "scroll", "page", "top", "bottom"}
+        if action == "back":
+            return not self.picking() and bool(self.history)
         if action in picker_only:
             return self.picking()
         if action in doc_only:
@@ -293,12 +358,32 @@ class DocView(App):
             self.set_bar(f"路径不存在: {p}", error=True)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.history.clear()
         value = event.value
         event.input.value = ""
         self.open_input(value)
 
     def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
+        self.history.clear()
         self.set_target(str(event.path))
+
+    def action_open_link(self, url: str) -> None:
+        """Clicked link: Feishu docs open here (with `back`), web links in this machine's browser."""
+        if FEISHU_DOC_RE.match(url):
+            if url != self.target:
+                self.history.append(self.target)
+                self.set_target(url)
+                self.refresh_bindings()
+        elif url.startswith(("http://", "https://", "mailto:")):
+            self.open_url(url)
+            self.set_bar(f"已在本机浏览器打开: {url}")
+        else:
+            self.set_bar(f"无法打开的链接: {url}", error=True)
+
+    def action_back(self) -> None:
+        if self.history:
+            self.set_target(self.history.pop())
+            self.refresh_bindings()
 
     def action_picker(self) -> None:
         self.set_target("")
@@ -359,7 +444,7 @@ class DocView(App):
                 fm = mtime(target)
                 title, content = load_local(target)
                 rev = None
-            self.call_from_thread(self.loaded, render(content), title, rev, target, fm)
+            self.call_from_thread(self.loaded, render(content, target), title, rev, target, fm)
         except Exception as e:  # show any load/render failure in the bar, keep last good view
             self.call_from_thread(self.failed, target, e)
 
@@ -372,7 +457,11 @@ class DocView(App):
         self.next_poll = time.monotonic() + FEISHU_POLL_SECONDS
         self.title_text, self.revision, self.file_mtime = title, rev, fm
         if renderable is not None:
-            self.query_one("#doc", Static).update(renderable)
+            doc = self.query_one("#doc", Static)
+            doc.update(renderable)
+            # In a real terminal (not in headless tests) Textual 8.2 sometimes keeps the old
+            # height after update(), showing only the first line; relayout once more.
+            self.call_after_refresh(doc.refresh, layout=True)
             if target != self.shown_target:
                 self.query_one("#body").scroll_home(animate=False)
             self.shown_target = target
