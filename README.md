@@ -122,3 +122,7 @@ docview.py     Textual 界面：开始页、渲染、定时检查更新
 
 - 每个运行中的 docview 在 `~/.local/state/docview/` 下有一个状态文件，里面写着当前打开的目标。`docview --refresh` 只是更新这些文件的修改时间，docview 发现后就会重新加载。docview 退出时会删除自己的状态文件。
 - 飞书文档通过 `lark-cli docs +fetch --doc-format markdown` 获取。返回的 Markdown 里夹带的 HTML 表格由 docview 自己转成终端表格，其余部分交给 Rich 渲染。
+
+## 许可证
+
+[MIT](LICENSE)
