@@ -35,6 +35,7 @@
 依赖：
 
 - [uv](https://docs.astral.sh/uv/)：自动准备 Python 依赖（Textual、markdownify、BeautifulSoup），不需要手动建虚拟环境。
+- [jq](https://jqlang.org)：只有 `--pane` 需要（macOS 15 及以上自带）。
 - [lark-cli](https://github.com/larksuite/cli)：只有看飞书文档时需要。安装后先登录：
   ```bash
   npm install -g @larksuite/cli
@@ -59,6 +60,7 @@ docview notes.md                          # 打开本地 Markdown
 docview page.html                         # 打开本地 HTML
 docview https://xxx.feishu.cn/docx/XXXX   # 打开飞书文档
 docview https://xxx.feishu.cn/wiki/XXXX   # 打开飞书知识库文档
+docview --pane notes.md                   # 在 herdr 右侧新开窗格打开（不抢焦点，退出后窗格自动关闭）
 docview --refresh                         # 让正在运行的 docview 立即重新加载
 ```
 
@@ -89,14 +91,15 @@ docview 在当前终端里直接运行，按 `q` 退出。
 
 ## 和 AI agent 配合
 
-1. 把终端分成左右两个窗格。
-2. 一边运行 `docview <文档链接或文件>`。
-3. 另一边让 agent 修改文档。飞书文档可以让 agent 用 `lark-cli docs +update` 做局部修改。
-4. agent 改完后运行 `docview --refresh`，预览会立即更新。不运行的话，本地文件约 1 秒、飞书文档最多约 20 秒也会自动刷新。
+在 [herdr](https://herdr.dev) 里，直接对 agent 说"在 docview 打开 xx 文档"就行：agent 运行 `docview --pane <文档>`，文档会在右侧新开的窗格里打开，焦点留在 agent 这边；在那个窗格按 `q` 退出后，窗格自动关闭。
 
-可以把下面这句加到 agent 的说明里（比如 `CLAUDE.md`）：
+1. agent 用 `docview --pane <文档链接或文件>` 打开文档（不在 herdr 里时，自己分屏后运行 `docview <文档>`）。
+2. 让 agent 修改文档。飞书文档可以让 agent 用 `lark-cli docs +update` 做局部修改。
+3. agent 改完后运行 `docview --refresh`，预览会立即更新。不运行的话，本地文件约 1 秒、飞书文档最多约 20 秒也会自动刷新。
 
-> 修改飞书文档或预览中的本地文档后，运行 `docview --refresh`。
+可以把下面这段加到 agent 的说明里（比如 `CLAUDE.md`）：
+
+> 用户要求"在 docview 打开"某个文档时，运行 `docview --pane <飞书文档链接或本地文件路径>`（只给了文档名时，先找到它的链接或路径）。修改飞书文档或预览中的本地文档后，运行 `docview --refresh`。
 
 `--refresh` 会刷新同一个 herdr workspace 里所有运行中的 docview；不在 herdr 里时，会刷新本机所有不在 herdr 里运行的 docview。
 
